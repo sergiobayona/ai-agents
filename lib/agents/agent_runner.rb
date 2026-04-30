@@ -67,8 +67,12 @@ module Agents
     # @param max_turns [Integer] Maximum turns before stopping (default: 10)
     # @param headers [Hash, nil] Custom HTTP headers to pass through to the underlying LLM provider
     # @param params [Hash, nil] Provider-specific parameters to pass through to the underlying LLM (e.g., service_tier)
+    # @param api_keys [Hash, nil] Per-call API key overrides keyed by provider symbol.
+    #   Each value may be a String or a Proc that receives `{provider:, agent:, model:, context:}`
+    #   and returns a String. Procs are called once per chat construction (initial + each handoff),
+    #   which is the natural seam for rate-limit-aware key pools.
     # @return [RunResult] Execution result with output, messages, and updated context
-    def run(input, context: {}, max_turns: Runner::DEFAULT_MAX_TURNS, headers: nil, params: nil)
+    def run(input, context: {}, max_turns: Runner::DEFAULT_MAX_TURNS, headers: nil, params: nil, api_keys: nil)
       # Determine which agent should handle this conversation
       # Uses conversation history to maintain continuity across handoffs
       current_agent = determine_conversation_agent(context)
@@ -82,6 +86,7 @@ module Agents
         max_turns: max_turns,
         headers: headers,
         params: params,
+        api_keys: api_keys,
         callbacks: @callbacks
       )
     end

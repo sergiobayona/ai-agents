@@ -82,10 +82,12 @@ module Agents
     # @param max_turns [Integer] Maximum conversation turns before stopping
     # @param headers [Hash, nil] Custom HTTP headers passed to the underlying LLM provider
     # @param params [Hash, nil] Provider-specific parameters passed to the underlying LLM (e.g., service_tier)
+    # @param api_keys [Hash, nil] Per-call provider API key overrides (String or Proc).
+    #   See {AgentRunner#run} for details.
     # @param callbacks [Hash] Optional callbacks for real-time event notifications
     # @return [RunResult] The result containing output, messages, and usage
     def run(starting_agent, input, context: {}, registry: {}, max_turns: DEFAULT_MAX_TURNS, headers: nil, params: nil,
-            callbacks: {})
+            api_keys: nil, callbacks: {})
       # The starting_agent is already determined by AgentRunner based on conversation history
       current_agent = starting_agent
 
@@ -103,7 +105,12 @@ module Agents
       agent_params = Helpers::HashNormalizer.normalize(current_agent.params, label: "params")
 
       # Create chat and restore conversation history
-      chat = RubyLLM::Chat.new(model: current_agent.model)
+      llm_context = build_llm_context(api_keys, current_agent, context_wrapper)
+      chat = if llm_context
+               RubyLLM::Chat.new(model: current_agent.model, context: llm_context)
+             else
+               RubyLLM::Chat.new(model: current_agent.model)
+             end
       current_headers = Helpers::HashNormalizer.merge(agent_headers, runtime_headers)
       current_params = Helpers::HashNormalizer.merge(agent_params, runtime_params)
       apply_headers(chat, current_headers)
@@ -165,6 +172,10 @@ module Agents
 
           # Reconfigure existing chat for new agent - preserves conversation history automatically
           configure_chat_for_agent(chat, current_agent, context_wrapper, replace: true)
+          # Re-resolve api keys for the new agent: this is the seam where a Proc-based
+          # key pool gets a chance to rotate / re-checkout for the new model & rate-limit bucket.
+          new_llm_context = build_llm_context(api_keys, current_agent, context_wrapper)
+          chat.with_context(new_llm_context) if new_llm_context
           agent_headers = Helpers::HashNormalizer.normalize(current_agent.headers, label: "headers")
           current_headers = Helpers::HashNormalizer.merge(agent_headers, runtime_headers)
           apply_headers(chat, current_headers)
@@ -417,6 +428,28 @@ module Agents
 
       last_msg = chat.messages.last
       last_msg && last_msg.role == :user && last_msg.content.to_s == input.to_s
+    end
+
+    # Build a per-call RubyLLM::Context with resolved provider keys, or nil if no
+    # overrides apply (in which case Chat.new uses the global RubyLLM config — the
+    # pre-existing back-compat path).
+    #
+    # @param api_keys [Hash, nil] Per-call key specs (String or Proc) keyed by provider symbol
+    # @param agent [Agents::Agent] The agent the chat is being built for
+    # @param context_wrapper [RunContext]
+    # @return [RubyLLM::Context, nil]
+    def build_llm_context(api_keys, agent, context_wrapper)
+      resolved = KeyResolver.resolve_for(
+        per_call_keys: api_keys,
+        agent: agent,
+        model: agent.model,
+        context: context_wrapper.context
+      )
+      return nil if resolved.empty?
+
+      RubyLLM.context do |cfg|
+        resolved.each { |key, value| cfg.public_send("#{key}=", value) }
+      end
     end
 
     def apply_headers(chat, headers)

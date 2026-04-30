@@ -226,6 +226,67 @@ RSpec.describe Agents::Runner do
       end
     end
 
+    context "with api_keys overrides" do
+      let(:mock_chat) { instance_double(RubyLLM::Chat) }
+      let(:mock_response) do
+        instance_double(RubyLLM::Message, tool_call?: false, content: "ok",
+                                          input_tokens: 1, output_tokens: 1)
+      end
+
+      before do
+        allow(mock_chat).to receive_messages(with_instructions: mock_chat, with_temperature: mock_chat,
+                                             with_tools: mock_chat, with_schema: mock_chat,
+                                             with_model: mock_chat, with_context: mock_chat,
+                                             with_headers: mock_chat, with_params: mock_chat,
+                                             ask: mock_response)
+        allow(mock_chat).to receive(:add_message)
+        allow(Agents::Helpers::MessageExtractor).to receive(:extract_messages).and_return([])
+      end
+
+      it "passes a per-call RubyLLM::Context with String keys to Chat.new" do
+        captured_context = nil
+        allow(RubyLLM::Chat).to receive(:new) do |**kwargs|
+          captured_context = kwargs[:context]
+          mock_chat
+        end
+
+        runner.run(agent, "hi", api_keys: { openai: "sk-tenant-1" })
+
+        expect(captured_context).to be_a(RubyLLM::Context)
+        expect(captured_context.config.openai_api_key).to eq("sk-tenant-1")
+      end
+
+      it "invokes a Proc spec at chat construction with provider/agent/model info" do
+        seen = []
+        probe = lambda do |info|
+          seen << info.slice(:provider, :model)
+          "sk-pool-#{seen.size}"
+        end
+        captured_context = nil
+        allow(RubyLLM::Chat).to receive(:new) do |**kwargs|
+          captured_context = kwargs[:context]
+          mock_chat
+        end
+
+        runner.run(agent, "hi", api_keys: { openai: probe })
+
+        expect(seen).to eq([{ provider: :openai, model: "gpt-4o" }])
+        expect(captured_context.config.openai_api_key).to eq("sk-pool-1")
+      end
+
+      it "does not pass a context: kwarg when no overrides apply (back compat)" do
+        captured_kwargs = nil
+        allow(RubyLLM::Chat).to receive(:new) do |**kwargs|
+          captured_kwargs = kwargs
+          mock_chat
+        end
+
+        runner.run(agent, "hi")
+
+        expect(captured_kwargs).not_to have_key(:context)
+      end
+    end
+
     context "with conversation history" do
       let(:context_with_history) do
         {
