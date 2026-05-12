@@ -132,6 +132,8 @@ RSpec.describe Agents::Helpers::MessageExtractor do
     context "when chat has assistant messages with tool calls" do
       let(:tool_call) do
         instance_double(RubyLLM::ToolCall,
+                        id: "call_123",
+                        name: "test_tool",
                         to_h: {
                           id: "call_123",
                           name: "test_tool",
@@ -172,6 +174,8 @@ RSpec.describe Agents::Helpers::MessageExtractor do
     context "when assistant tool calls have no text content" do
       let(:tool_call) do
         instance_double(RubyLLM::ToolCall,
+                        id: "call_456",
+                        name: "test_tool",
                         to_h: {
                           id: "call_456",
                           name: "test_tool",
@@ -204,6 +208,137 @@ RSpec.describe Agents::Helpers::MessageExtractor do
                                      arguments: { foo: "bar" }
                                    }
                                  ]
+                               }
+                             ])
+      end
+    end
+
+    context "when chat contains a handoff tool call and its result" do
+      let(:user_msg) do
+        instance_double(RubyLLM::Message,
+                        role: :user,
+                        content: "Please help me buy something",
+                        tool_call?: false,
+                        tool_calls: nil)
+      end
+
+      let(:handoff_tool_call) do
+        instance_double(RubyLLM::ToolCall,
+                        id: "call_handoff",
+                        name: "handoff_to_ventas",
+                        to_h: { id: "call_handoff", name: "handoff_to_ventas", arguments: {} })
+      end
+
+      let(:assistant_handoff_msg) do
+        instance_double(RubyLLM::Message,
+                        role: :assistant,
+                        content: nil,
+                        tool_call?: true,
+                        tool_calls: { "call_handoff" => handoff_tool_call })
+      end
+
+      let(:handoff_result_msg) do
+        instance_double(RubyLLM::Message,
+                        role: :tool,
+                        content: "I'll transfer you to Ventas",
+                        tool_result?: true,
+                        tool_call_id: "call_handoff")
+      end
+
+      let(:follow_up_msg) do
+        instance_double(RubyLLM::Message,
+                        role: :assistant,
+                        content: "Hi, I'm Ventas. How can I help?",
+                        tool_call?: false,
+                        tool_calls: nil)
+      end
+
+      let(:chat) do
+        instance_double(RubyLLM::Chat,
+                        messages: [user_msg, assistant_handoff_msg, handoff_result_msg, follow_up_msg])
+      end
+
+      it "drops the handoff assistant envelope and its tool result" do
+        result = described_class.extract_messages(chat, current_agent)
+
+        expect(result).to eq([
+                               { role: :user, content: "Please help me buy something" },
+                               {
+                                 role: :assistant,
+                                 content: "Hi, I'm Ventas. How can I help?",
+                                 agent_name: "TestAgent"
+                               }
+                             ])
+      end
+    end
+
+    context "when an assistant message mixes a regular and a handoff tool call" do
+      let(:regular_tool_call) do
+        instance_double(RubyLLM::ToolCall,
+                        id: "call_regular",
+                        name: "lookup_customer",
+                        to_h: { id: "call_regular", name: "lookup_customer", arguments: { id: 1 } })
+      end
+
+      let(:handoff_tool_call) do
+        instance_double(RubyLLM::ToolCall,
+                        id: "call_handoff",
+                        name: "handoff_to_billing",
+                        to_h: { id: "call_handoff", name: "handoff_to_billing", arguments: {} })
+      end
+
+      let(:assistant_mixed_msg) do
+        instance_double(RubyLLM::Message,
+                        role: :assistant,
+                        content: "Looking that up before transferring",
+                        tool_call?: true,
+                        tool_calls: {
+                          "call_regular" => regular_tool_call,
+                          "call_handoff" => handoff_tool_call
+                        })
+      end
+
+      let(:regular_result_msg) do
+        instance_double(RubyLLM::Message,
+                        role: :tool,
+                        content: "Customer #1",
+                        tool_result?: true,
+                        tool_call_id: "call_regular")
+      end
+
+      let(:handoff_result_msg) do
+        instance_double(RubyLLM::Message,
+                        role: :tool,
+                        content: "Transferring",
+                        tool_result?: true,
+                        tool_call_id: "call_handoff")
+      end
+
+      let(:chat) do
+        instance_double(RubyLLM::Chat,
+                        messages: [assistant_mixed_msg, regular_result_msg, handoff_result_msg])
+      end
+
+      it "keeps the regular tool call and drops only the handoff" do
+        result = described_class.extract_messages(chat, current_agent)
+
+        expect(result).to eq([
+                               {
+                                 role: :assistant,
+                                 content: "Looking that up before transferring",
+                                 agent_name: "TestAgent",
+                                 tool_calls: [
+                                   {
+                                     id: "call_regular",
+                                     name: "lookup_customer",
+                                     arguments: { id: 1 }
+                                   }
+                                 ]
+                               },
+                               {
+                                 role: :tool,
+                                 content: "Customer #1",
+                                 tool_call_id: "call_regular"
                                }
                              ])
       end

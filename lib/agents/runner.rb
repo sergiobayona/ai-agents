@@ -261,10 +261,15 @@ module Agents
     # @param context_wrapper [RunContext] Context containing conversation history
     def restore_conversation_history(chat, context_wrapper)
       history = context_wrapper.context[:conversation_history] || []
+      handoff_call_ids = collect_handoff_call_ids_from_history(history)
       valid_tool_call_ids = Set.new
 
       history.each do |msg|
         next unless restorable_message?(msg)
+
+        # Strip handoff tool-result bookkeeping. The matching assistant tool_call
+        # gets stripped inside build_message_params via handoff_call_ids.
+        next if msg[:role].to_sym == :tool && handoff_call_ids.include?(msg[:tool_call_id])
 
         if msg[:role].to_sym == :tool &&
            msg[:tool_call_id] &&
@@ -273,7 +278,7 @@ module Agents
           next
         end
 
-        message_params = build_message_params(msg)
+        message_params = build_message_params(msg, handoff_call_ids)
         next unless message_params # Skip invalid messages
 
         message = RubyLLM::Message.new(**message_params)
@@ -283,6 +288,25 @@ module Agents
           valid_tool_call_ids.merge(message_params[:tool_calls].keys)
         end
       end
+    end
+
+    # First pass over the stored history that finds the ids of every handoff
+    # tool_call. These are handoff bookkeeping and must not be replayed to the
+    # provider (the target agent has no handoff tool of its own to satisfy them).
+    def collect_handoff_call_ids_from_history(history)
+      prefix = Helpers::MessageExtractor::HANDOFF_TOOL_PREFIX
+      ids = Set.new
+      history.each do |msg|
+        next unless msg[:role].to_sym == :assistant
+        next unless msg[:tool_calls].is_a?(Array)
+
+        msg[:tool_calls].each do |tc|
+          id = tc[:id] || tc["id"]
+          name = (tc[:name] || tc["name"]).to_s
+          ids << id if id && name.start_with?(prefix)
+        end
+      end
+      ids
     end
 
     # Check if a message should be restored
@@ -299,7 +323,8 @@ module Agents
     end
 
     # Build message parameters for restoration
-    def build_message_params(msg)
+    def build_message_params(msg, handoff_call_ids = nil)
+      handoff_call_ids ||= Set.new
       role = msg[:role].to_sym
 
       content_value = msg[:content]
@@ -328,6 +353,7 @@ module Agents
         params[:tool_calls] = msg[:tool_calls].each_with_object({}) do |tc, hash|
           tool_call_id = tc[:id] || tc["id"]
           next unless tool_call_id
+          next if handoff_call_ids.include?(tool_call_id)
 
           hash[tool_call_id] = RubyLLM::ToolCall.new(
             id: tool_call_id,
@@ -335,6 +361,18 @@ module Agents
             arguments: tc[:arguments] || tc["arguments"] || {}
           )
         end
+        # If every stored tool_call lacked an id (or was a handoff) we end up
+        # with {}. Shipping an empty tool_calls envelope to the provider is
+        # invalid, so drop the key.
+        params.delete(:tool_calls) if params[:tool_calls].empty?
+      end
+
+      # An assistant message with neither content nor a valid tool_call is the
+      # "synthetic tool call" pattern providers reject. Skip it.
+      if role == :assistant &&
+         Helpers::MessageExtractor.content_empty?(content_value) &&
+         !params.key?(:tool_calls)
+        return nil
       end
 
       params

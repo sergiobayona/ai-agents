@@ -853,6 +853,100 @@ RSpec.describe Agents::Runner do
         end
       end
 
+      context "with handoff bookkeeping in external history" do
+        let(:context_with_handoff_bookkeeping) do
+          {
+            conversation_history: [
+              { role: :user, content: "Quiero comprar" },
+              {
+                role: :assistant,
+                content: "",
+                tool_calls: [{ id: "call_handoff", name: "handoff_to_ventas", arguments: {} }]
+              },
+              { role: :tool, content: "I'll transfer you to Ventas...", tool_call_id: "call_handoff" },
+              { role: :assistant, content: "Hi, I'm Ventas. How can I help?" }
+            ]
+          }
+        end
+
+        before do
+          stub_simple_chat("Sure thing")
+        end
+
+        it "strips the handoff assistant envelope and its tool result on restore" do
+          restored_messages = []
+          mock_chat = instance_double(RubyLLM::Chat)
+
+          allow(RubyLLM::Chat).to receive(:new).and_return(mock_chat)
+          allow(mock_chat).to receive(:add_message) { |msg| restored_messages << msg }
+          allow(mock_chat).to receive_messages(
+            with_instructions: mock_chat,
+            with_temperature: mock_chat,
+            with_tools: mock_chat,
+            with_schema: mock_chat,
+            with_model: mock_chat,
+            messages: [],
+            ask: instance_double(RubyLLM::Message,
+                                 tool_call?: false,
+                                 content: "Sure thing",
+                                 is_a?: false)
+          )
+
+          runner.run(agent, "Continue", context: context_with_handoff_bookkeeping)
+
+          restored_assistants = restored_messages.select { |m| m.role == :assistant }
+          expect(restored_assistants.length).to eq(1)
+          expect(restored_assistants.first.content.to_s).to eq("Hi, I'm Ventas. How can I help?")
+
+          tool_messages = restored_messages.select { |m| m.role == :tool }
+          expect(tool_messages).to be_empty
+        end
+      end
+
+      context "with an assistant message that has empty content and only idless tool_calls" do
+        let(:context_with_synthetic_assistant) do
+          {
+            conversation_history: [
+              { role: :user, content: "Hello" },
+              {
+                role: :assistant,
+                content: "",
+                tool_calls: [{ name: "handoff_to_ventas", arguments: {} }]
+              }
+            ]
+          }
+        end
+
+        before do
+          stub_simple_chat("Hi there")
+        end
+
+        it "drops the assistant message instead of restoring an empty envelope" do
+          restored_messages = []
+          mock_chat = instance_double(RubyLLM::Chat)
+
+          allow(RubyLLM::Chat).to receive(:new).and_return(mock_chat)
+          allow(mock_chat).to receive(:add_message) { |msg| restored_messages << msg }
+          allow(mock_chat).to receive_messages(
+            with_instructions: mock_chat,
+            with_temperature: mock_chat,
+            with_tools: mock_chat,
+            with_schema: mock_chat,
+            with_model: mock_chat,
+            messages: [],
+            ask: instance_double(RubyLLM::Message,
+                                 tool_call?: false,
+                                 content: "Hi there",
+                                 is_a?: false)
+          )
+
+          runner.run(agent, "Anything?", context: context_with_synthetic_assistant)
+
+          assistant_messages = restored_messages.select { |m| m.role == :assistant }
+          expect(assistant_messages).to be_empty
+        end
+      end
+
       context "with out-of-order tool history" do
         let(:context_with_out_of_order_tool_history) do
           {
