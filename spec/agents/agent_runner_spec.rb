@@ -130,7 +130,6 @@ RSpec.describe Agents::AgentRunner do
           max_turns: Agents::Runner::DEFAULT_MAX_TURNS,
           headers: nil,
           params: nil,
-          api_keys: nil,
           callbacks: hash_including(
             run_start: [],
             run_complete: [],
@@ -155,7 +154,6 @@ RSpec.describe Agents::AgentRunner do
           max_turns: 5,
           headers: nil,
           params: nil,
-          api_keys: nil,
           callbacks: hash_including(
             run_start: [],
             run_complete: [],
@@ -182,7 +180,6 @@ RSpec.describe Agents::AgentRunner do
           max_turns: Agents::Runner::DEFAULT_MAX_TURNS,
           headers: headers,
           params: nil,
-          api_keys: nil,
           callbacks: hash_including(
             run_start: [],
             run_complete: [],
@@ -219,7 +216,6 @@ RSpec.describe Agents::AgentRunner do
           max_turns: Agents::Runner::DEFAULT_MAX_TURNS,
           headers: nil,
           params: nil,
-          api_keys: nil,
           callbacks: hash_including(
             run_start: [],
             run_complete: [],
@@ -255,7 +251,6 @@ RSpec.describe Agents::AgentRunner do
           max_turns: Agents::Runner::DEFAULT_MAX_TURNS,
           headers: nil,
           params: nil,
-          api_keys: nil,
           callbacks: hash_including(
             run_start: [],
             run_complete: [],
@@ -291,7 +286,6 @@ RSpec.describe Agents::AgentRunner do
           max_turns: Agents::Runner::DEFAULT_MAX_TURNS,
           headers: nil,
           params: nil,
-          api_keys: nil,
           callbacks: hash_including(
             run_start: [],
             run_complete: [],
@@ -325,7 +319,6 @@ RSpec.describe Agents::AgentRunner do
           max_turns: Agents::Runner::DEFAULT_MAX_TURNS,
           headers: nil,
           params: params,
-          api_keys: nil,
           callbacks: hash_including(
             run_start: [],
             run_complete: [],
@@ -336,20 +329,6 @@ RSpec.describe Agents::AgentRunner do
             agent_handoff: [],
             chat_created: []
           )
-        )
-      end
-    end
-
-    context "when passing api_keys" do
-      it "forwards api_keys (Proc and String specs) to the runner unchanged" do
-        api_keys = { openai: ->(_info) { "sk-rotated" }, anthropic: "sk-ant-static" }
-
-        runner.run("Hello", api_keys: api_keys)
-
-        expect(mock_runner_instance).to have_received(:run).with(
-          triage_agent,
-          "Hello",
-          hash_including(api_keys: api_keys)
         )
       end
     end

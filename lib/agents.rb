@@ -76,9 +76,7 @@ module Agents
 
     def apply_if_present(config, key)
       value = configuration.send(key)
-      return if value.nil? || value.is_a?(Proc)
-
-      config.send("#{key}=", value)
+      config.send("#{key}=", value) if value
     end
   end
 
@@ -100,9 +98,9 @@ module Agents
     # Check if at least one provider is configured
     # @return [Boolean] True if any provider has an API key
     def configured?
-      [@openai_api_key, @anthropic_api_key, @gemini_api_key,
-       @deepseek_api_key, @openrouter_api_key, @ollama_api_base,
-       @bedrock_api_key].any? { |v| !v.nil? }
+      @openai_api_key || @anthropic_api_key || @gemini_api_key ||
+        @deepseek_api_key || @openrouter_api_key || @ollama_api_base ||
+        @bedrock_api_key
     end
   end
 end
@@ -119,7 +117,6 @@ require_relative "agents/agent"
 # Execution components
 require_relative "agents/tool_wrapper"
 require_relative "agents/callback_manager"
-require_relative "agents/key_resolver"
 require_relative "agents/agent_runner"
 require_relative "agents/runner"
 require_relative "agents/agent_tool"
