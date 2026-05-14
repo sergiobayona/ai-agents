@@ -50,7 +50,7 @@ require_relative "helpers/hash_normalizer"
 #   )
 module Agents
   class Agent
-    attr_reader :name, :instructions, :model, :tools, :handoff_agents, :temperature, :response_schema, :headers, :params
+    attr_reader :name, :instructions, :model, :tools, :temperature, :response_schema, :headers, :params
 
     # Initialize a new Agent instance
     #
@@ -58,7 +58,9 @@ module Agents
     # @param instructions [String, Proc, nil] Static string or dynamic Proc that returns instructions
     # @param model [String] The LLM model to use (default: "gpt-4.1-mini")
     # @param tools [Array<Agents::Tool>] Array of tool instances the agent can use
-    # @param handoff_agents [Array<Agents::Agent>] Array of agents this agent can hand off to
+    # @param handoff_agents [Array<Agents::Agent, Agents::Handoff::Target>] Targets this agent can
+    #   hand off to. Bare agents use default messaging; wrap with {Agents::Handoff.to} to
+    #   override the transfer message, description, or tool name.
     # @param temperature [Float] Controls randomness in responses (0.0 = deterministic, 1.0 = very random, default: 0.7)
     # @param response_schema [Hash, nil] JSON schema for structured output responses
     # @param headers [Hash, nil] Default HTTP headers applied to LLM requests
@@ -69,7 +71,9 @@ module Agents
       @instructions = instructions
       @model = model
       @tools = tools.dup
-      @handoff_agents = []
+      # Hash{agent => Handoff::Target}. Hash preserves insertion order and gives
+      # us last-write-wins semantics keyed on the target agent identity.
+      @handoff_targets = {}
       @temperature = temperature
       @response_schema = response_schema
       @headers = Helpers::HashNormalizer.normalize(headers, label: "headers", freeze_result: true)
@@ -89,13 +93,25 @@ module Agents
       register_handoffs(*handoff_agents) unless handoff_agents.empty?
     end
 
+    # Target agents this agent can hand off to, without the per-edge metadata.
+    # @return [Array<Agents::Agent>]
+    def handoff_agents
+      @mutex.synchronize { @handoff_targets.keys }
+    end
+
+    # Full per-edge handoff configuration, including overrides.
+    # @return [Array<Agents::Handoff::Target>]
+    def handoff_targets
+      @mutex.synchronize { @handoff_targets.values }
+    end
+
     # Get all tools available to this agent, including any auto-generated handoff tools
     #
     # @return [Array<Agents::Tool>] All tools available to the agent
     def all_tools
       @mutex.synchronize do
         # Compute handoff tools dynamically
-        handoff_tools = @handoff_agents.map { |agent| HandoffTool.new(agent) }
+        handoff_tools = @handoff_targets.values.map { |target| build_handoff_tool(target) }
         @tools + handoff_tools
       end
     end
@@ -104,7 +120,10 @@ module Agents
     # This method can be called after agent creation to set up handoff relationships.
     # Thread-safe: Multiple threads can safely call this method concurrently.
     #
-    # @param agents [Array<Agents::Agent>] Agents to register as handoff targets
+    # @param agents [Array<Agents::Agent, Agents::Handoff::Target>] Targets to register. Pass a
+    #   bare Agent for default behavior, or {Agents::Handoff.to}(agent, message:, ...) to
+    #   customize the transfer message or tool metadata. Re-registering the same target
+    #   replaces the previous entry (last-write-wins).
     # @return [self] Returns self for method chaining
     # @example Setting up hub-and-spoke pattern
     #   # Create agents
@@ -116,10 +135,18 @@ module Agents
     #   triage.register_handoffs(billing, support)
     #   billing.register_handoffs(triage)  # Specialists only handoff back to triage
     #   support.register_handoffs(triage)
+    #
+    # @example Custom transfer message on one edge
+    #   triage.register_handoffs(
+    #     billing,
+    #     Agents::Handoff.to(support, message: "Connecting you with support.")
+    #   )
     def register_handoffs(*agents)
       @mutex.synchronize do
-        @handoff_agents.concat(agents)
-        @handoff_agents.uniq! # Prevent duplicates
+        agents.each do |arg|
+          target = Handoff::Target.from(arg)
+          @handoff_targets[target.agent] = target
+        end
       end
       self
     end
@@ -156,7 +183,8 @@ module Agents
     # @option changes [String, Proc] :instructions New instructions
     # @option changes [String] :model New model identifier
     # @option changes [Array<Agents::Tool>] :tools New tools array (replaces all tools)
-    # @option changes [Array<Agents::Agent>] :handoff_agents New handoff agents
+    # @option changes [Array<Agents::Agent, Agents::Handoff::Target>] :handoff_agents
+    #   New handoff targets. Bare Agents or {Agents::Handoff.to} wrappers both work.
     # @option changes [Float] :temperature Temperature for LLM responses (0.0-1.0)
     # @option changes [Hash, nil] :response_schema JSON schema for structured output
     # @return [Agents::Agent] A new frozen agent instance with the specified changes
@@ -166,7 +194,7 @@ module Agents
         instructions: changes.fetch(:instructions, @instructions),
         model: changes.fetch(:model, @model),
         tools: changes.fetch(:tools, @tools.dup),
-        handoff_agents: changes.fetch(:handoff_agents, @handoff_agents),
+        handoff_agents: changes.fetch(:handoff_agents, handoff_targets),
         temperature: changes.fetch(:temperature, @temperature),
         response_schema: changes.fetch(:response_schema, @response_schema),
         headers: changes.fetch(:headers, @headers),
@@ -242,6 +270,17 @@ module Agents
         name: name,
         description: description,
         output_extractor: output_extractor
+      )
+    end
+
+    private
+
+    def build_handoff_tool(target)
+      HandoffTool.new(
+        target.agent,
+        message: target.message,
+        description: target.description,
+        name: target.name
       )
     end
   end

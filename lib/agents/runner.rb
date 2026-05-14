@@ -516,9 +516,14 @@ module Agents
     def build_agent_tools(agent, context_wrapper)
       all_tools = []
 
-      # Add handoff tools
-      agent.handoff_agents.each do |target_agent|
-        handoff_tool = HandoffTool.new(target_agent)
+      # Add handoff tools, forwarding per-edge overrides set via Agents::Handoff.to
+      agent.handoff_targets.each do |target|
+        handoff_tool = HandoffTool.new(
+          target.agent,
+          message: target.message,
+          description: target.description,
+          name: target.name
+        )
         all_tools << ToolWrapper.new(handoff_tool, context_wrapper)
       end
 

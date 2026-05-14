@@ -155,6 +155,41 @@ RSpec.describe Agents::Agent do
 
       expect(result).to be(agent)
     end
+
+    context "with Handoff::Target arguments" do
+      it "accepts Handoff.to(...) and exposes the agent via handoff_agents" do
+        target = Agents::Handoff.to(handoff_agent, message: "Hi from triage")
+
+        agent.register_handoffs(target)
+
+        expect(agent.handoff_agents).to eq([handoff_agent])
+      end
+
+      it "stores the per-target metadata on handoff_targets" do
+        target = Agents::Handoff.to(handoff_agent, message: "Hi from triage")
+
+        agent.register_handoffs(target)
+
+        expect(agent.handoff_targets).to eq([target])
+      end
+
+      it "allows mixing bare Agents and Handoff::Target args" do
+        target = Agents::Handoff.to(extra_handoff_agent, message: "custom")
+
+        agent.register_handoffs(handoff_agent, target)
+
+        expect(agent.handoff_agents).to contain_exactly(handoff_agent, extra_handoff_agent)
+      end
+
+      it "applies last-write-wins when the same agent is re-registered with a new message" do
+        agent.register_handoffs(Agents::Handoff.to(handoff_agent, message: "first"))
+        agent.register_handoffs(Agents::Handoff.to(handoff_agent, message: "second"))
+
+        messages = agent.handoff_targets.map(&:message)
+        expect(agent.handoff_agents).to eq([handoff_agent])
+        expect(messages).to eq(["second"])
+      end
+    end
   end
 
   describe "#all_tools" do
@@ -172,6 +207,21 @@ RSpec.describe Agents::Agent do
       expect(all_tools).to include(test_tool)
       expect(all_tools.size).to eq(2)
       expect(all_tools.last).to be_a(Agents::HandoffTool)
+    end
+
+    it "propagates the custom message and description to generated handoff tools" do
+      agent.register_handoffs(
+        Agents::Handoff.to(handoff_agent, message: "Routing to handoff", description: "use this")
+      )
+
+      handoff_tool = agent.all_tools.find { |t| t.is_a?(Agents::HandoffTool) }
+      tool_context = instance_double(Agents::ToolContext)
+      run_context = instance_double(Agents::RunContext)
+      allow(tool_context).to receive(:run_context).and_return(run_context)
+      allow(run_context).to receive(:context).and_return({})
+
+      expect(handoff_tool.description).to eq("use this")
+      expect(handoff_tool.perform(tool_context).content).to eq("Routing to handoff")
     end
 
     it "is thread-safe" do
@@ -240,6 +290,18 @@ RSpec.describe Agents::Agent do
 
       expect(cloned.temperature).to eq(0.1)
       expect(original_agent.temperature).to eq(0.7)
+    end
+
+    it "preserves per-target handoff metadata across clones" do
+      source = described_class.new(
+        name: "Source",
+        handoff_agents: [Agents::Handoff.to(other_agent, message: "custom message")]
+      )
+
+      cloned = source.clone
+
+      expect(cloned.handoff_agents).to eq([other_agent])
+      expect(cloned.handoff_targets.map(&:message)).to eq(["custom message"])
     end
 
     it "preserves response_schema when cloning" do
