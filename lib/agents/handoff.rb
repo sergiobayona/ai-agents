@@ -46,15 +46,61 @@ module Agents
   #   # Call 1: handoff_to_support() -> Processed and executed
   #   # Call 2: handoff_to_billing() -> Ignored (only first handoff processed)
   #   # Result: Only transfers to Support Agent
+  # Configuration helpers for agent handoffs.
+  #
+  # Use {Agents::Handoff.to} when wiring handoffs to attach per-edge overrides
+  # (custom transfer message, tool description, tool name) to a target agent.
+  #
+  # @example Custom transfer message
+  #   triage.register_handoffs(
+  #     billing,
+  #     Agents::Handoff.to(support, message: "Connecting you with support.")
+  #   )
+  #
+  # @example Dynamic message via Proc
+  #   Agents::Handoff.to(
+  #     sales,
+  #     message: ->(ctx) { "Hi #{ctx.run_context.context.dig(:state, :name)}, sales here." }
+  #   )
+  module Handoff
+    # Immutable description of one handoff edge. `agent` is the target;
+    # `message`, `description`, and `name` are optional overrides applied to
+    # the generated {Agents::HandoffTool}.
+    Target = Struct.new(:agent, :message, :description, :name, keyword_init: true) do
+      # Normalize an argument from {Agents::Agent#register_handoffs} into a Target.
+      def self.from(value)
+        return value if value.is_a?(Target)
+
+        new(agent: value).freeze
+      end
+    end
+
+    # Build a handoff Target with optional overrides.
+    #
+    # @param agent [Agents::Agent] The target agent for this handoff edge.
+    # @param message [String, Proc, nil] Custom string injected into the tool
+    #   response (and the receiving agent's history). Procs receive the
+    #   {Agents::ToolContext} at perform time.
+    # @param description [String, nil] Override the LLM-facing tool description.
+    # @param name [String, nil] Override the generated tool name.
+    # @return [Target] A frozen Target value object.
+    def self.to(agent, message: nil, description: nil, name: nil)
+      Target.new(agent: agent, message: message, description: description, name: name).freeze
+    end
+  end
+
+  # Auto-generated tool that performs an agent-to-agent handoff. One instance is
+  # built per {Agents::Handoff::Target} registered on the source agent; calling it
+  # records `:pending_handoff` in context and halts so {Agents::Runner} can switch
+  # agents on the next turn.
   class HandoffTool < Tool
     attr_reader :target_agent
 
-    def initialize(target_agent)
+    def initialize(target_agent, message: nil, description: nil, name: nil)
       @target_agent = target_agent
-
-      # Set up the tool with a standardized name and description
-      @tool_name = "handoff_to_#{Helpers::NameNormalizer.to_tool_name(target_agent.name)}"
-      @tool_description = "Transfer conversation to #{target_agent.name}"
+      @message = message
+      @tool_name = name || "handoff_to_#{Helpers::NameNormalizer.to_tool_name(target_agent.name)}"
+      @tool_description = description || "Transfer conversation to #{target_agent.name}"
 
       super()
     end
@@ -80,11 +126,23 @@ module Agents
         timestamp: Time.now
       }
 
-      # Return halt to stop LLM continuation
-      halt("I'll transfer you to #{@target_agent.name} who can better assist you with this.")
+      halt(resolve_message(tool_context))
     end
 
     # NOTE: RubyLLM will handle schema generation internally when needed
     # Handoff tools have no parameters, which RubyLLM will detect automatically
+
+    private
+
+    def resolve_message(tool_context)
+      case @message
+      when nil
+        "I'll transfer you to #{@target_agent.name} who can better assist you with this."
+      when Proc
+        @message.call(tool_context)
+      else
+        @message.to_s
+      end
+    end
   end
 end
